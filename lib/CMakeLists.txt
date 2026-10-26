@@ -6,6 +6,9 @@ add_library(lib
     src/parser/extended.cpp
     src/parser/expr.cpp
     src/parser/statement.cpp
+    #lexer
+    src/parser/token.cpp
+    src/parser/lexer.cpp
     # ast
     src/ast/expr.cpp
 )

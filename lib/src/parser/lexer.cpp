@@ -1,0 +1,121 @@
+#include "parser/lexer.hpp"
+
+Lexer::Lexer(std::string input) { this->input = input; }
+
+const bool isReservedChar(char c) {
+  return c == ';' || c == '(' || c == ')' || c == '{' || c == '}' || c == '[' ||
+         c == ']' || c == ',' || c == '=' || c == ':' || c == '+' || c == '-' ||
+         c == '*' || c == '/' || c == '<' || c == '>' || c == '!' || c == '|' ;
+}
+const bool isWhitespace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+TokenType getTokenType(char c) {
+  switch (c) {
+  case ';':
+    return T_SEMICOL;
+  case '(':
+    return T_OPEN_PAREN;
+  case ')':
+    return T_CLOSE_PAREN;
+  case '{':
+    return T_OPEN_BRACE;
+  case '}':
+    return T_CLOSE_BRACE;
+  case '[':
+    return T_OPEN_BRACKET;
+  case ']':
+    return T_CLOSE_BRACKET;
+  case '<':
+    return T_LT;
+  case '>':
+    return T_GT;
+  case ',':
+    return T_COMMA;
+  case '=':
+    return T_EQUAL;
+  case ':':
+    return T_COLON;
+  case '+':
+    return T_PLUS;
+  case '-':
+    return T_MINUS;
+  case '*':
+    return T_MUL;
+  case '/':
+    return T_DIV;
+  default:
+    return T_ERROR;
+  }
+}
+
+void Lexer::saveIdent() {
+  // if it's a keyword, save it as a keyword
+  if (keywords.find(ident) != keywords.end()) {
+    Token t = {keywords.at(ident), ident, line, col};
+    tokens.push_back(t);
+    ident = "";
+    state = DEFAULT;
+    return;
+  }
+  // if ident is an int, save it as a number
+  if (ident.find_first_not_of("0123456789") == std::string::npos) {
+    Token t = {T_NUMBER, ident, line, col};
+    tokens.push_back(t);
+    ident = "";
+    state = DEFAULT;
+    return;
+  }
+  // if not save it as an identifier
+  Token t = {T_IDENT, ident, line, col};
+  tokens.push_back(t);
+  ident = "";
+  state = DEFAULT;
+}
+
+bool isIdentChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+std::vector<Token> Lexer::tokenize() {
+  while (i < input.length()) {
+    if (isWhitespace(input[i])) {
+      if (state == READING_IDENT) {
+        saveIdent();
+      }
+      // i++;
+      advance();
+      continue;
+    }
+    if (isReservedChar(input[i])) {
+      if (state == READING_IDENT) {
+        saveIdent();
+      }
+      TokenType tp = getTokenType(input[i]);
+      Token t = {tp, input.substr(i, 1)};
+      tokens.push_back(t);
+      // i++;
+      advance();
+      continue;
+    }
+    if (isIdentChar(input[i])) {
+      state = READING_IDENT;
+      ident += input[i];
+      // i++;
+      advance();
+      continue;
+    }
+    // i++;
+    advance();
+  }
+  return tokens;
+}
+
+void Lexer::advance() {
+  if (input[i++] == '\n') {
+    line++;
+    col = 0;
+  }
+  col++;
+}
