@@ -1,16 +1,10 @@
 # Create the library from source files
 add_library(lib
-    # parser combinator
-    src/parser/basic.cpp
-    src/parser/util.cpp
-    src/parser/extended.cpp
-    src/parser/expr.cpp
-    src/parser/statement.cpp
+    src/parser/ast.cpp 
+    src/parser/parser.cpp
     #lexer
     src/parser/token.cpp
     src/parser/lexer.cpp
-    # ast
-    src/ast/expr.cpp
 )
 
 

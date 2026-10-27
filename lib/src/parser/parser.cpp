@@ -1,0 +1,319 @@
+#include "parser/parser.hpp"
+#include "parser/ast.hpp"
+
+#include <cassert>
+#include <vector>
+#include <numeric>
+
+Parser::Parser(std::vector<Token> _tokens) { tokens = std::move(_tokens); pos_ = 0; tokens.push_back(Token{T_EOF, ""}); }
+
+Token Parser::curr() {
+  return tokens[pos_];
+}
+
+void Parser::consume(uint32_t n) {
+  pos_ += n;
+}
+
+bool Parser::isEOF() {
+  return pos_ >= tokens.size() || tokens[pos_].type == T_EOF;
+}
+
+Result<statement::StmtPtr, std::string> Parser::parse() { 
+  // Result<expr::ExprPtr, std::string> result = parseExpr();
+  Result<statement::StmtPtr, std::string> result = parseStmt();
+  return result;
+}
+
+Result<fn::FunctionPtr, std::string> Parser::parsefn() {
+  Result<fn::FunctionPtr, std::string> result = parseFunction();
+  return result;
+}
+
+Result<module::ModulePtr, std::string> Parser::parsemod() {
+  Result<module::ModulePtr, std::string> result = parseModule();
+  return result;
+}
+
+Result<expr::ExprPtr, std::string> Parser::parseExpr() {
+  auto result = parseTerm();
+  if (result.isErr()) {
+    return result;
+  }
+  expr::ExprPtr expr = result.getValue();
+  while (curr().type == T_PLUS || curr().type == T_MINUS) {
+    Token op = curr();
+    Loc loc = curr().getLoc();
+    consume();
+    auto rhs = parseTerm();
+    if (rhs.isErr()) {
+      return rhs;
+    }
+    expr::BinOpType op_type = op.type == T_PLUS ? expr::kBinOpAdd : expr::kBinOpSub;
+    expr = std::make_unique<expr::BinOp>(op_type, std::move(expr), std::move(rhs.getValue()));
+    expr->setLoc(loc);
+  }
+  return Result<expr::ExprPtr, std::string>(std::move(expr));
+}
+
+Result<expr::ExprPtr, std::string> Parser::parseTerm() {
+  auto result = parseFactor();
+  if (result.isErr()) {
+    return result;
+  }
+  expr::ExprPtr expr = result.getValue();
+  while (curr().type == T_MUL || curr().type == T_DIV) {
+    Token op = curr();
+    Loc loc = curr().getLoc();
+    consume();
+    auto rhs = parseFactor();
+    if (rhs.isErr()) {
+      return rhs;
+    }
+    expr::BinOpType op_type = op.type == T_MUL ? expr::kBinOpMul : expr::kBinOpDiv;
+    expr = std::make_unique<expr::BinOp>(op_type, std::move(expr), std::move(rhs.getValue()));
+    expr->setLoc(loc);
+  }
+  return Result<expr::ExprPtr, std::string>(std::move(expr));
+}
+
+Result<expr::ExprPtr, std::string> Parser::parseFactor() {
+  if (curr().type == T_OPEN_PAREN) {
+    consume();
+    auto result = parseExpr();
+    if (result.isErr()) {
+      return result;
+    }
+    if (curr().type != T_CLOSE_PAREN) {
+      return Result<expr::ExprPtr, std::string>::expectedButGot("')'", curr());
+    }
+    consume();
+    return Result<expr::ExprPtr, std::string>(std::move(result.getValue()));
+  }
+  if (curr().type == T_NUMBER) {
+    auto result = std::make_unique<expr::IntValue>(std::stoi(curr().value));
+    result->setLoc(curr().getLoc());
+    Result<expr::ExprPtr, std::string> res = Result<expr::ExprPtr, std::string>(std::move(result));
+    consume();
+    return std::move(res);
+  }
+  if (curr().type == T_IDENT) {
+    save(); 
+    auto result = parseFnCall();
+    if (result.isErr()) {
+      restore();
+    } else {
+      return std::move(result);
+    }
+    auto res = std::make_unique<expr::Ident>(curr().value);
+    res->setLoc(curr().getLoc());
+    Result<expr::ExprPtr, std::string> result2 = Result<expr::ExprPtr, std::string>(std::move(res));
+    consume();
+    return std::move(result2);
+  }
+  return Result<expr::ExprPtr, std::string>::buildError("expected factor", curr());
+}
+
+Result<expr::ExprPtr, std::string> Parser::parseFnCall() {
+  if (curr().type != T_IDENT) {
+    return Result<expr::ExprPtr, std::string>::expectedButGot("identifier", curr());
+  }
+  Loc loc = curr().getLoc();
+  std::string name = curr().value;
+  consume();
+  if (curr().type != T_OPEN_PAREN) {
+    return Result<expr::ExprPtr, std::string>::expectedButGot("'('", curr());
+  }
+  consume();
+  std::vector<expr::ExprPtr> args;
+  while (curr().type != T_CLOSE_PAREN) {
+    auto result = parseExpr();
+    if (result.isErr()) {
+      return result;
+    }
+    args.push_back(std::move(result.getValue()));
+    if (curr().type == T_CLOSE_PAREN) {
+      break;
+    }
+    if (curr().type != T_COMMA) {
+      return Result<expr::ExprPtr, std::string>::expectedButGot("','", curr());
+    }
+    consume();
+  }
+  consume();
+  auto res = std::make_unique<expr::FunctionCall>(name, std::move(args));
+  res->setLoc(loc);
+  return Result<expr::ExprPtr, std::string>(std::move(res));
+}
+
+void Parser::save() {
+  saved_pos_.push_back(pos_);
+}
+
+uint32_t Parser::restore() {
+  assert(!saved_pos_.empty()&&"cannot restore from empty saved positions");
+  uint32_t pos = saved_pos_.back();
+  saved_pos_.pop_back();
+  pos_ = pos;
+  return pos;
+}
+
+Result<statement::StmtPtr, std::string> Parser::parseStmt() {
+  save();
+  auto result = parseReturnStmt();
+  std::vector<std::string> errs;
+  if (result.isErr()) {
+    errs.push_back(result.getError());
+    restore();
+    result = parseAssignStmt();
+  } else {
+    return Result<statement::StmtPtr, std::string>(std::move(result.getValue()));
+  }
+  if (result.isErr()) {
+    errs.push_back(result.getError());
+    auto err = std::accumulate(errs.begin(), errs.end(), std::string(""));
+    return Result<statement::StmtPtr, std::string>(err);
+  }
+  return Result<statement::StmtPtr, std::string>(std::move(result.getValue()));
+}
+
+Result<statement::StmtPtr, std::string> Parser::parseReturnStmt() {
+  if (curr().type != T_RETURN) {
+    return Result<statement::StmtPtr, std::string>::buildError("expected return", curr());
+  }
+  Loc loc = curr().getLoc();
+  consume();
+  auto result = parseExpr();
+  if (result.isErr()) {
+    auto err = result.getError();
+    return Result<statement::StmtPtr, std::string>(err);
+  }
+  if(curr().type != T_SEMICOL) {
+    return Result<statement::StmtPtr, std::string>::expectedButGot(";", curr());
+  }
+  consume();
+  auto res = std::make_unique<statement::ReturnStmt>(std::move(result.getValue()));
+  res->setLoc(loc);
+  return Result<statement::StmtPtr, std::string>(std::move(res));
+}
+
+Result<statement::StmtPtr, std::string> Parser::parseAssignStmt() {
+  if (curr().type != T_IDENT) {
+    return Result<statement::StmtPtr, std::string>::expectedButGot("identifier", curr());
+  }
+  std::string lhs = curr().value;
+  Loc loc = curr().getLoc();
+  consume();
+  if (curr().type != T_EQUAL) {
+    return Result<statement::StmtPtr, std::string>::expectedButGot("=", curr());
+  }
+  consume();
+  auto result = parseExpr();
+  if (result.isErr()) {
+    auto err = result.getError();
+    return Result<statement::StmtPtr, std::string>(err);
+  }
+  if(curr().type != T_SEMICOL) {
+    return Result<statement::StmtPtr, std::string>::expectedButGot(";", curr());
+  }
+  consume();
+  auto res = std::make_unique<statement::AssignStmt>(lhs, std::move(result.getValue()));
+  res->setLoc(loc);
+  return Result<statement::StmtPtr, std::string>(std::move(res));
+}
+
+Result<types::TypePtr, std::string> Parser::parseType() {
+  if (curr().type == T_IDENT) {
+    std::string name = curr().value;
+    consume();
+    if (curr().type == T_LT) {
+      consume();
+      auto result = parseType();
+      if (result.isErr()) {
+        return result;
+      }
+      if (curr().type != T_GT) {
+        return Result<types::TypePtr, std::string>::expectedButGot("'>'", curr());
+      }
+      consume();
+      auto res = std::make_unique<types::ADTKType>(name, std::move(result.getValue()));
+      return Result<types::TypePtr, std::string>(std::move(res));
+    }
+    auto res = std::make_unique<types::AtomicType>(name);
+    return Result<types::TypePtr, std::string>(std::move(res));
+  }
+  return Result<types::TypePtr, std::string>::expectedButGot("identifier", curr());
+}
+
+Result<fn::FunctionPtr, std::string> Parser::parseFunction() {
+  if (curr().type != T_FUNCTION) {
+    return Result<fn::FunctionPtr, std::string>::buildError("expected fn", curr());
+  }
+  Loc loc = curr().getLoc();
+  consume();
+  if (curr().type != T_IDENT) {
+    return Result<fn::FunctionPtr, std::string>::expectedButGot("function name", curr());
+  }
+  std::string name = curr().value;
+  consume();
+  if (curr().type != T_OPEN_PAREN) {
+    return Result<fn::FunctionPtr, std::string>::expectedButGot("'('", curr());
+  }
+  consume();
+  std::vector<std::pair<std::string,types::TypePtr>> args;
+  while (curr().type != T_CLOSE_PAREN) {
+    if (curr().type != T_IDENT) {
+      return Result<fn::FunctionPtr, std::string>::expectedButGot("identifier", curr());
+    }
+    std::string arg_name = curr().value;
+    consume();
+    if (curr().type != T_COLON) {
+      return Result<fn::FunctionPtr, std::string>::expectedButGot("':'", curr());
+    }
+    consume();
+    auto result = parseType();
+    if (result.isErr()) {
+      return Result<fn::FunctionPtr, std::string>(result.getError());
+    }
+    types::TypePtr arg_type = std::move(result.getValue());
+    args.push_back(std::make_pair(arg_name, std::move(arg_type)));
+    if (curr().type == T_CLOSE_PAREN) {
+      break;
+    }
+    if (curr().type != T_COMMA) {
+      return Result<fn::FunctionPtr, std::string>::expectedButGot("','", curr());
+    } else {
+      consume();
+    }
+  }
+  consume();
+  std::vector<statement::StmtPtr> body;
+  if (curr().type != T_OPEN_BRACE) {
+    return Result<fn::FunctionPtr, std::string>::expectedButGot("'{'", curr());
+  }
+  consume();
+  while (curr().type != T_CLOSE_BRACE) {
+    auto result = parseStmt();
+    if (result.isErr()) {
+      Result<fn::FunctionPtr, std::string> err = Result<fn::FunctionPtr, std::string>(result.getError());
+      return std::move(err);
+    }
+    body.push_back(std::move(result.getValue()));
+  }
+  consume();
+  auto res = std::make_unique<fn::Function>(name, std::move(args), std::move(body));
+  res->setLoc(loc);
+  return Result<fn::FunctionPtr, std::string>(std::move(res));
+}
+
+Result<module::ModulePtr, std::string> Parser::parseModule() {
+  std::vector<fn::FunctionPtr> functions;
+  while (!isEOF()) {
+    auto result = parseFunction();
+    if (result.isErr()) {
+      return Result<module::ModulePtr, std::string>(result.getError());
+    }
+    functions.push_back(std::move(result.getValue()));
+  }
+  return Result<module::ModulePtr, std::string>(std::make_unique<module::Module>(std::move(functions)));
+}
