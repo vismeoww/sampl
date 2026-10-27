@@ -36,6 +36,10 @@ std::string tokenTypeToString(TokenType type) {
     return "MUL";
   case T_DIV:
     return "DIV";
+  case T_RETURN:
+    return "RETURN";
+  case T_FUNCTION:
+    return "FUNCTION";
   default:
     return "UNKNOWN";
   }
